@@ -1,0 +1,59 @@
+name: Deploy NGINX to AKS & Sync ServiceNow CMDB
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy-and-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{{{ secrets.AZURE_CREDENTIALS }}}}
+
+      - name: Set AKS Context
+        uses: azure/aks-set-context@v4
+        with:
+          resource-group: ${{{{ secrets.AKS_RESOURCE_GROUP }}}}
+          cluster-name: ${{ values.aksCluster }}
+
+      - name: Deploy NGINX to AKS & Wait for Rollout
+        run: |
+          kubectl apply -f k8s/deployment.yaml
+          kubectl rollout status deployment/${{ values.name }} -n ${{ values.k8sNamespace }} --timeout=120s
+
+      - name: Sync Application CI to ServiceNow CMDB via Go Service
+        if: success()
+        env:
+          GO_CMDB_URL: ${{{{ secrets.GO_CMDB_URL }}}}
+        run: |
+          APP_NAME=$(yq '.metadata.name' catalog-info.yaml)
+          DESCRIPTION=$(yq '.metadata.description' catalog-info.yaml)
+          OWNER=$(yq '.spec.owner' catalog-info.yaml)
+          SYSTEM=$(yq '.spec.system' catalog-info.yaml)
+          LIFECYCLE=$(yq '.spec.lifecycle' catalog-info.yaml)
+          AKS_CLUSTER=$(yq '.metadata.annotations["://azure.com"]' catalog-info.yaml)
+          K8S_NS=$(yq '.metadata.annotations["kubernetes.io/namespace"]' catalog-info.yaml)
+          SERVICE_URL=$(yq '.metadata.annotations["://servicenow.com"]' catalog-info.yaml)
+          IMAGE_TAG=$(kubectl get deployment "$APP_NAME" -n "$K8S_NS" -o jsonpath='{.spec.template.spec.containers[0].image}' | cut -d':' -f2)
+
+          curl -f -X POST "$GO_CMDB_URL/sync" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "backstage_entity": "component:default/'"$APP_NAME"'",
+              "app_name": "'"$APP_NAME"'-'"$LIFECYCLE"'",
+              "description": "'"$DESCRIPTION"'",
+              "owner": "'"$OWNER"'",
+              "system_name": "'"$SYSTEM"'",
+              "lifecycle": "'"$LIFECYCLE"'",
+              "aks_cluster": "'"$AKS_CLUSTER"'",
+              "k8s_namespace": "'"$K8S_NS"'",
+              "version": "'"$IMAGE_TAG"'",
+              "service_url": "'"$SERVICE_URL"'"
+            }'
