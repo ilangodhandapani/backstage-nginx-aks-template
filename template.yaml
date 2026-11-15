@@ -1,0 +1,153 @@
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: nginx-aks-servicenow-template
+  title: NGINX Service on AKS (with ServiceNow CMDB Sync)
+  description: Creates an NGINX repository with AKS deployment manifests, GitHub Actions CI/CD, and automatic ServiceNow CMDB registration.
+  tags:
+    - kubernetes
+    - aks
+    - nginx
+    - servicenow
+spec:
+  owner: group:default/web-platform-sre
+  type: service
+
+  parameters:
+    # Step 1: Application Identity & Ownership
+    - title: Application & Ownership Details
+      required:
+        - name
+        - owner
+        - system
+        - lifecycle
+      properties:
+        name:
+          title: Application Name
+          type: string
+          description: Unique lowercase name for the service (e.g., nginx-frontend)
+          pattern: '^[a-z0-9-]+$'
+          ui:autofocus: true
+        description:
+          title: Application Description
+          type: string
+          default: NGINX web service deployed on Azure Kubernetes Service
+        owner:
+          title: Owning Team
+          type: string
+          description: Select your Entra ID team (maps to ServiceNow support_group)
+          ui:field: OwnerPicker
+          ui:options:
+            catalogFilter:
+              kind: Group
+        system:
+          title: System / Platform Name
+          type: string
+          default: core-web-platform
+          description: Parent system or product domain (e.g., payments-platform)
+        lifecycle:
+          title: Lifecycle Stage
+          type: string
+          default: production
+          enum:
+            - production
+            - staging
+            - development
+
+    # Step 2: AKS & Runtime Configuration
+    - title: AKS & Runtime Configuration
+      required:
+        - aksCluster
+        - k8sNamespace
+        - nginxTag
+        - replicas
+        - containerPort
+      properties:
+        aksCluster:
+          title: AKS Cluster Name
+          type: string
+          default: aks-prod-eastus
+          description: Target Azure Kubernetes Service cluster name
+        k8sNamespace:
+          title: Kubernetes Namespace
+          type: string
+          default: default
+          description: Target namespace inside the AKS cluster
+        nginxTag:
+          title: NGINX Image Tag
+          type: string
+          default: 1.27.2
+          description: Docker image version tag (synced to ServiceNow version field)
+        replicas:
+          title: Pod Replicas
+          type: integer
+          default: 2
+          minimum: 1
+          maximum: 10
+        containerPort:
+          title: Container Port
+          type: integer
+          default: 80
+        serviceUrl:
+          title: Ingress / Service URL
+          type: string
+          default: https://aks.local
+          description: Public or internal endpoint URL (synced to ServiceNow url field)
+
+    # Step 3: GitHub Repository Destination
+    - title: GitHub Repository Location
+      required:
+        - repoUrl
+      properties:
+        repoUrl:
+          title: Repository Location
+          type: string
+          ui:field: RepoUrlPicker
+          ui:options:
+            allowedHosts:
+              - github.com
+
+  steps:
+    - id: fetch-base
+      name: Render Skeleton Templates
+      action: fetch:template
+      input:
+        url: ./skeleton
+        values:
+          name: ${{ parameters.name }}
+          description: ${{ parameters.description }}
+          owner: ${{ parameters.owner }}
+          system: ${{ parameters.system }}
+          lifecycle: ${{ parameters.lifecycle }}
+          aksCluster: ${{ parameters.aksCluster }}
+          k8sNamespace: ${{ parameters.k8sNamespace }}
+          nginxTag: ${{ parameters.nginxTag }}
+          replicas: ${{ parameters.replicas }}
+          containerPort: ${{ parameters.containerPort }}
+          serviceUrl: ${{ parameters.serviceUrl }}
+          destination: ${{ parameters.repoUrl | parseRepoUrl }}
+
+    - id: publish
+      name: Create & Push to GitHub Repository
+      action: publish:github
+      input:
+        allowedHosts:
+          - github.com
+        description: ${{ parameters.description }}
+        repoUrl: ${{ parameters.repoUrl }}
+        defaultBranch: main
+
+    - id: register
+      name: Register Component in Backstage Catalog
+      action: catalog:register
+      input:
+        repoContentsUrl: ${{ steps['publish'].output.repoContentsUrl }}
+        catalogInfoPath: '/catalog-info.yaml'
+
+  output:
+    links:
+      - title: Open GitHub Repository
+        url: ${{ steps['publish'].output.remoteUrl }}
+      - title: Open in Backstage Catalog
+        icon: catalog
+        entityRef: ${{ steps['register'].output.entityRef }}
