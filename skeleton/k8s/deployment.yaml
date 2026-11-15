@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${{ values.name }}
+  namespace: ${{ values.k8sNamespace }}
+  labels:
+    app: ${{ values.name }}
+    managed-by: backstage
+spec:
+  replicas: ${{ values.replicas }}
+  selector:
+    matchLabels:
+      app: ${{ values.name }}
+  template:
+    metadata:
+      labels:
+        app: ${{ values.name }}
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:${{ values.nginxTag }}
+          ports:
+            - containerPort: ${{ values.containerPort }}
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ values.name }}
+  namespace: ${{ values.k8sNamespace }}
+spec:
+  type: ClusterIP
+  selector:
+    app: ${{ values.name }}
+  ports:
+    - port: 80
+      targetPort: ${{ values.containerPort }}
