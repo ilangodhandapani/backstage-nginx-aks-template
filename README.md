@@ -97,32 +97,58 @@ backend.add(import('@backstage/plugin-kubernetes-backend'));
 
 ### 3. Configure `app-config.yaml`
 ```yaml
+# 1. GitHub Integration (PAT & GitHub App for Scaffolder & Catalog)
 integrations:
   github:
     - host: github.com
-      token: \${GITHUB_TOKEN}
+      token: ${GITHUB_TOKEN}
+      apps:
+        - appId: ${GITHUB_APP_ID}
+          clientId: ${GITHUB_CLIENT_ID}
+          clientSecret: ${GITHUB_CLIENT_SECRET}
+          privateKey: ${GITHUB_PRIVATE_KEY}
 
+# 2. GitHub OAuth Sign-In Provider (Maps GitHub login to Backstage User entity)
+auth:
+  environment: development
+  providers:
+    github:
+      development:
+        clientId: ${GITHUB_CLIENT_ID}
+        clientSecret: ${GITHUB_CLIENT_SECRET}
+        signIn:
+          resolvers:
+            - resolver: usernameMatchingUserEntityName
+
+# 3. Catalog Rules, Software Templates & Microsoft Entra ID (Graph) Sync
 catalog:
   rules:
     - allow: [Component, System, API, Resource, Location, Template]
+  locations:
+    - type: url
+      target: https://github.com/ilangodhandapani/golang-webapp-gin-template/blob/main/template.yaml
+      rules:
+        - allow: [Template]
+    - type: url
+      target: https://github.com/ilangodhandapani/backstage-nginx-aks-template/blob/main/template.yaml
+      rules:
+        - allow: [Template]
   providers:
     microsoftGraphOrg:
       default:
-        tenantId: \${AZURE_TENANT_ID}
-        clientId: \${MSGRAPH_CLIENT_ID}
-        clientSecret: \${MSGRAPH_CLIENT_SECRET}
+        tenantId: ${AZURE_TENANT_ID}
+        clientId: ${MSGRAPH_CLIENT_ID}
+        clientSecret: ${MSGRAPH_CLIENT_SECRET}
+        queryMode: advanced
         user:
-          filter: accountEnabled eq true
+          filter: "accountEnabled eq true and userType eq 'member'"
+          select: ['id', 'displayName', 'mail', 'userPrincipalName']
         group:
           filter: "securityEnabled eq true"
         schedule:
-          frequency: { minutes: 60 }
-          timeout: { minutes: 50 }
-  locations:
-    - type: url
-      target: https://github.com
-      rules:
-        - allow: [Template]
+          frequency: { minutes: 30 }
+          timeout: { minutes: 15 }
+
 ```
 
 ---
