@@ -135,6 +135,13 @@ spec:
         repoUrl: ${{ parameters.repoUrl }}
         defaultBranch: main
 
+    # Pause briefly so GitHub finishes indexing the new branch
+    - id: wait
+      name: Waiting for GitHub Indexing
+      action: debug:wait
+      input:
+        seconds: 10
+        
     - id: register
       name: Register Component in Backstage Catalog
       action: catalog:register
