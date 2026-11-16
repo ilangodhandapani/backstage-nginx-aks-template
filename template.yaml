@@ -131,8 +131,6 @@ spec:
       name: Create & Push to GitHub Repository
       action: publish:github
       input:
-        allowedHosts:
-          - github.com
         description: ${{ parameters.description }}
         repoUrl: ${{ parameters.repoUrl }}
         defaultBranch: main
