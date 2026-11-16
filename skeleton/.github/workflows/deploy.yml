@@ -2,9 +2,19 @@
 name: Deploy NGINX to AKS & Sync ServiceNow CMDB
 
 on:
-  push:
-    branches:
-      - main
+  workflow_call:
+    inputs:
+      aks_resource_group:
+        required: true
+        type: string
+    secrets:
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        required: true
+  workflow_dispatch:
 
 permissions:
   id-token: write
@@ -14,10 +24,10 @@ jobs:
   deploy-and-sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repository
+      - name: Checkout Caller Application Repository
         uses: actions/checkout@v4
 
-      - name: Azure Login (Passwordless OIDC)
+      - name: Azure Login (Passwordless Universal OIDC)
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -28,19 +38,30 @@ jobs:
         id: meta
         run: |
           echo "app_name=$(yq '.metadata.name' catalog-info.yaml)" >> $GITHUB_OUTPUT
-          echo "aks_cluster=$(yq '.metadata.annotations["://azure.com"]' catalog-info.yaml)" >> $GITHUB_OUTPUT
+          echo "aks_cluster=$(yq '.metadata.annotations["azure.io/aks-cluster"]' catalog-info.yaml)" >> $GITHUB_OUTPUT
           echo "k8s_ns=$(yq '.metadata.annotations["kubernetes.io/namespace"]' catalog-info.yaml)" >> $GITHUB_OUTPUT
 
       - name: Set AKS Context
         uses: azure/aks-set-context@v4
         with:
-          resource-group: ${{ secrets.AKS_RESOURCE_GROUP }}
+          resource-group: ${{ inputs.aks_resource_group || 'ilango' }}
           cluster-name: ${{ steps.meta.outputs.aks_cluster }}
 
       - name: Deploy NGINX to AKS & Wait for Rollout
+        id: deploy
         run: |
           kubectl apply -f k8s/deployment.yaml
+          echo "Waiting 10 seconds for Kubernetes deployment controller to initialize pods..."
+          sleep 10
           kubectl rollout status deployment/${{ steps.meta.outputs.app_name }} -n ${{ steps.meta.outputs.k8s_ns }} --timeout=120s
+          kubectl get pods -l app=${{ steps.meta.outputs.app_name }} -n ${{ steps.meta.outputs.k8s_ns }}
+
+      - name: Rollback & Capture Diagnostics on Deployment Failure
+        if: failure() && steps.deploy.outcome == 'failure'
+        run: |
+          echo "Deployment failed! Capturing pod events and rolling back..."
+          kubectl describe pods -l app=${{ steps.meta.outputs.app_name }} -n ${{ steps.meta.outputs.k8s_ns }}
+          kubectl rollout undo deployment/${{ steps.meta.outputs.app_name }} -n ${{ steps.meta.outputs.k8s_ns }} || true
 
       - name: Sync Application CI to ServiceNow CMDB via Go Service in AKS
         if: success()
@@ -55,9 +76,9 @@ jobs:
           OWNER=$(yq '.spec.owner' catalog-info.yaml)
           SYSTEM=$(yq '.spec.system' catalog-info.yaml)
           LIFECYCLE=$(yq '.spec.lifecycle' catalog-info.yaml)
-          AKS_CLUSTER=$(yq '.metadata.annotations["://azure.com"]' catalog-info.yaml)
+          AKS_CLUSTER=$(yq '.metadata.annotations["azure.io/aks-cluster"]' catalog-info.yaml)
           K8S_NS=$(yq '.metadata.annotations["kubernetes.io/namespace"]' catalog-info.yaml)
-          SERVICE_URL=$(yq '.metadata.annotations["://servicenow.com"]' catalog-info.yaml)
+          SERVICE_URL=$(yq '.metadata.annotations["servicenow.io/service-url"]' catalog-info.yaml)
           IMAGE_TAG=$(kubectl get deployment "$APP_NAME" -n "$K8S_NS" -o jsonpath='{.spec.template.spec.containers[0].image}' | cut -d':' -f2)
 
           curl -f -X POST "http://localhost:8080/sync" \
