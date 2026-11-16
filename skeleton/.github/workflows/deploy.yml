@@ -1,9 +1,14 @@
+{% raw %}
 name: Deploy NGINX to AKS & Sync ServiceNow CMDB
 
 on:
   push:
     branches:
       - main
+
+permissions:
+  id-token: write
+  contents: read
 
 jobs:
   deploy-and-sync:
@@ -12,27 +17,39 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Azure Login
+      - name: Azure Login (Passwordless OIDC)
         uses: azure/login@v2
         with:
-          creds: ${{{{ secrets.AZURE_CREDENTIALS }}}}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Read Config from catalog-info.yaml
+        id: meta
+        run: |
+          echo "app_name=$(yq '.metadata.name' catalog-info.yaml)" >> $GITHUB_OUTPUT
+          echo "aks_cluster=$(yq '.metadata.annotations["://azure.com"]' catalog-info.yaml)" >> $GITHUB_OUTPUT
+          echo "k8s_ns=$(yq '.metadata.annotations["kubernetes.io/namespace"]' catalog-info.yaml)" >> $GITHUB_OUTPUT
 
       - name: Set AKS Context
         uses: azure/aks-set-context@v4
         with:
-          resource-group: ${{{{ secrets.AKS_RESOURCE_GROUP }}}}
-          cluster-name: ${{ values.aksCluster }}
+          resource-group: ${{ secrets.AKS_RESOURCE_GROUP }}
+          cluster-name: ${{ steps.meta.outputs.aks_cluster }}
 
       - name: Deploy NGINX to AKS & Wait for Rollout
         run: |
           kubectl apply -f k8s/deployment.yaml
-          kubectl rollout status deployment/${{ values.name }} -n ${{ values.k8sNamespace }} --timeout=120s
+          kubectl rollout status deployment/${{ steps.meta.outputs.app_name }} -n ${{ steps.meta.outputs.k8s_ns }} --timeout=120s
 
-      - name: Sync Application CI to ServiceNow CMDB via Go Service
+      - name: Sync Application CI to ServiceNow CMDB via Go Service in AKS
         if: success()
-        env:
-          GO_CMDB_URL: ${{{{ secrets.GO_CMDB_URL }}}}
         run: |
+          kubectl port-forward svc/cmdb-sync-service 8080:8080 -n platform-tools &
+          PF_PID=$!
+          trap "kill $PF_PID 2>/dev/null || true" EXIT
+          sleep 3
+
           APP_NAME=$(yq '.metadata.name' catalog-info.yaml)
           DESCRIPTION=$(yq '.metadata.description' catalog-info.yaml)
           OWNER=$(yq '.spec.owner' catalog-info.yaml)
@@ -43,7 +60,7 @@ jobs:
           SERVICE_URL=$(yq '.metadata.annotations["://servicenow.com"]' catalog-info.yaml)
           IMAGE_TAG=$(kubectl get deployment "$APP_NAME" -n "$K8S_NS" -o jsonpath='{.spec.template.spec.containers[0].image}' | cut -d':' -f2)
 
-          curl -f -X POST "$GO_CMDB_URL/sync" \
+          curl -f -X POST "http://localhost:8080/sync" \
             -H "Content-Type: application/json" \
             -d '{
               "backstage_entity": "component:default/'"$APP_NAME"'",
@@ -57,3 +74,4 @@ jobs:
               "version": "'"$IMAGE_TAG"'",
               "service_url": "'"$SERVICE_URL"'"
             }'
+{% endraw %}
